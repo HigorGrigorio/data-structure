@@ -1,5 +1,7 @@
 #include <memory>
 #include <type_traits>
+#include <iterator>
+#include <bits/allocator.h>
 
 namespace collections
 {
@@ -17,7 +19,7 @@ namespace collections
             struct Vector_impl_data
             {
             public:
-                pointer _First;
+                pointer _Start;
                 pointer _Last;
                 pointer _End_storage;
 
@@ -26,11 +28,11 @@ namespace collections
                 }
 
                 Vector_impl_data(Vector_impl_data &&v) noexcept
-                    : _First(v._First),
+                    : _Start(v._Start),
                       _Last(v._Last),
                       _End_storage(v._End_storage)
                 {
-                    v._First = v._Last = v._End_storage = pointer();
+                    v._Start = v._Last = v._End_storage = pointer();
                 }
 
                 void _swap(Vector_impl_data &v) noexcept
@@ -43,7 +45,7 @@ namespace collections
 
                 void _copy(Vector_impl_data const &v) noexcept
                 {
-                    _First = v._First;
+                    _Start = v._Start;
                     _Last = v._Last;
                     _End_storage = v._End_storage;
                 }
@@ -65,7 +67,7 @@ namespace collections
                 }
 
                 Vector_impl(alloc_type const &alloc) noexcept
-                    : Vector_impl(std::move(alloc))
+                    : alloc_type(std::move(alloc))
                 {
                 }
 
@@ -85,6 +87,7 @@ namespace collections
                 }
             };
 
+        protected:
             allocator_type &_Get_allocator() noexcept
             {
                 return Impl;
@@ -125,8 +128,9 @@ namespace collections
             }
 
             Vector_base(size_type n, allocator_type const &alloc)
-                : Vector_base(n, std::move(alloc))
+                : Impl(std::move(alloc))
             {
+                _Create_storage(n);
             }
 
             Vector_base(Vector_base &&v, allocator_type const &alloc)
@@ -136,36 +140,107 @@ namespace collections
                     this->Impl._swap(v);
                 else
                 {
-                    size_type n = v.Impl._End_storage - v.Impl._First;
+                    size_type n = v.Impl._End_storage - v.Impl._Start;
                     _Create_storage(n);
                 }
+            }
+
+            ~Vector_base()
+            {
+                _Deallocate(Impl._Start, Impl._End_storage - Impl._Start);
             }
 
         protected:
             Vector_impl Impl;
 
-        private:
-            [[nodiscard]] pointer _Allocate(size_type n) const noexcept
+            [[nodiscard]] pointer _Allocate(size_type n) noexcept
             {
-                return n ? std::allocator<alloc_type>::allocate(Impl, n) : pointer();
+                return n ? std::allocator_traits<alloc_type>::allocate(Impl, n) : pointer();
             }
 
             void _Deallocate(pointer ptr, size_type n) noexcept
             {
                 if (ptr)
-                    std::allocator<alloc_type>::deallocate(Impl, ptr, n);
+                    std::allocator_traits<alloc_type>::deallocate(Impl, ptr, n);
             }
 
             size_type n;
 
         protected:
-            void _Create_storage(size_type n) const noexcept
+            void _Create_storage(size_type n) noexcept
             {
-                this->n = n;
-                Impl._First = _Allocate(n);
-                Impl._Last = Impl._First;
-                Impl._End_storage = Impl._First + n;
+                Impl._Start = _Allocate(n);
+                Impl._Last = Impl._Start;
+                Impl._End_storage = Impl._Start + n;
             }
+        };
+
+        template <typename _Ty>
+        class Vector_const_iterator
+        {
+        public:
+            using value_type = _Ty;
+            using reference = value_type&;
+            using pointer = value_type*;
+            using diference_type = ptrdiff_t;
+            using iterator_category = std::bidirectional_iterator_tag;
+
+            using Self = Vector_const_iterator<_Ty>;
+            
+            Vector_const_iterator(pointer ptr)
+                : _Current(ptr)
+            {
+            }
+
+            reference operator*() const noexcept
+            {
+                return *operator->();
+            }
+
+            pointer operator->() const noexcept
+            {
+                return _Current;
+            }
+
+            Self operator++() noexcept
+            {
+                return Self(_Current++);
+            }
+
+            Self operator++(int) noexcept
+            {
+                _Current++;
+                return *this;
+            }
+
+            reference operator[](const diference_type& offset) noexcept
+            {
+                return _Current[offset];
+            }
+
+            Self operator+(const diference_type& offset) const noexcept
+            {
+                return Self(_Current + offset);
+            }
+
+            Self operator+=(const diference_type& offset) noexcept
+            {
+                _Current += offset;
+                return *this;
+            }
+
+            Self operator-(const diference_type& offset) const noexcept
+            {
+                return this + -offset;
+            }
+
+            Self operator-=(const diference_type& offset) noexcept
+            {
+                return operator+=(-offset);
+            }
+
+        private:
+            pointer _Current;
         };
     }
 
@@ -181,14 +256,74 @@ namespace collections
         using pointer = _Base::pointer;
         using reference = value_type &;
         using const_reference = const reference;
+        using size_type = size_t;
+        using difference_type = ptrdiff_t;
+        using const_iterator = __base::Vector_const_iterator<_Ty>;
+    protected:
+        using _Base::_Allocate;
+        using _Base::_Deallocate;
+        using _Base::_Get_allocator;
+        using _Base::Impl;
 
-        vector()
+        static size_type _S_check_size_init(size_type n, allocator_type const &alloc)
+        {
+            const size_type diffmax = std::numeric_limits<ptrdiff_t>::max() / sizeof(_Ty);
+            const size_type allocmax = alloc_traits::max_size(alloc);
+            const size_type small = std::min(diffmax, allocmax);
+
+            if (n > small)
+            std:
+                __throw_length_error("cannot create collections::vector larger than max_size()");
+
+            return n;
+        }
+
+    public:
+        vector() = default;
+        
+        ~vector() noexcept
+        {
+            std::_Destroy(this->Impl._Start, this->Impl._Last, _Get_allocator());
+        }
+        /**
+         * @brief Construct a new vector no elements
+         * 
+         * @param alloc An allocator to vector
+         */
+        explicit vector(allocator_type const &alloc) noexcept
+            : _Base(alloc)
         {
         }
 
-        vector(allocator_type const &alloc)
-            : _Base(alloc)
+        /**
+         * @brief Construct a new vector of @a n size with the value of @a value 
+         * 
+         * @param n The Number of elementy to initially create.
+         * @param value An element to copy
+         * @param alloc An allocator
+         */
+        explicit vector(size_type n, value_type const &value = value_type(), allocator_type const &alloc = allocator_type()) noexcept
+            : _Base(_S_check_size_init(n, alloc), alloc)
         {
+            _Fill_initialize(n, value);
+        }
+
+        vector(vector const &vec) noexcept
+        {
+            this->Impl._Last = std::__uninitialized_fill_n_a(
+                vec.begin(), vec.end(), this->Impl._Start, _Get_allocator());
+        }
+
+        const_iterator cbegin() noexcept
+        {
+            return const_iterator(this->Impl._Start);
+        }
+
+    private:
+        void _Fill_initialize(size_type n, value_type const &value) noexcept
+        {
+            this->Impl._Last = std::__uninitialized_fill_n_a(this->Impl._Start,
+                                                             n, value, _Get_allocator());
         }
     };
 }
