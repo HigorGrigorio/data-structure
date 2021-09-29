@@ -186,7 +186,7 @@ namespace collections
             using iterator_category = std::bidirectional_iterator_tag;
 
             using Self = Vector_const_iterator<_Ty>;
-            
+
             Vector_const_iterator(pointer ptr)
                 : _Current(ptr)
             {
@@ -242,6 +242,8 @@ namespace collections
         private:
             pointer _Current;
         };
+
+        
     }
 
     template <typename _Ty, typename _Alloc = std::allocator<_Ty>>
